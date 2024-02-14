@@ -129,7 +129,7 @@ pub fn execute(
 
 pub fn set_whitelist(
     deps: DepsMut,
-    _env: Env,
+    env: Env,
     info: MessageInfo,
     target: String,
     state: bool,
@@ -137,6 +137,19 @@ pub fn set_whitelist(
     let owner = OWNER.load(deps.storage)?;
     if info.sender.to_string() != owner {
         return Err(ContractError::Unauthorized {});
+    }
+
+    // Prevents minting new NFTs by simply toggling the whitelist status.
+    // This ensures that the capability to mint new tokens cannot be exploited
+    // by reopen whitelist state.
+    if state {
+        let owned_list = OWNED
+            .may_load(deps.storage, target.to_string())?
+            .unwrap_or(vec![]);
+
+        for _ in 0..owned_list.len() {
+            _burn(deps.storage, env.clone(), target.to_string())?;
+        }
     }
 
     WHITELIST.save(deps.storage, target.to_string(), &state)?;
@@ -215,6 +228,16 @@ fn transfer_from(
         {
             return Err(ContractError::Unauthorized {});
         }
+
+        // Prevents exploiting two different states of transferFrom can lead to a bug that allows minting 
+        // CW-721 tokens out of thin air through a whitelist
+        if WHITELIST
+            .may_load(deps.storage, to.clone())?
+            .unwrap_or_default()
+        {
+            return Err(ContractError::InvalidRecipient {});
+        }
+
         BALANCES.update(
             deps.storage,
             &from_addr,
