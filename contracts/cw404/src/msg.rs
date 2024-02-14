@@ -107,9 +107,9 @@ pub enum QueryMsg {
         include_expired: Option<bool>,
     },
     #[returns(bool)]
-    IsLocked {
-        token_id: String,
-    },
+    IsLocked { token_id: String },
+    #[returns(cw721::OwnerOfResponse)]
+    UserInfo { address: String },
     // Return operator that can access all of the owner's tokens.
     // #[returns(cw721::ApprovalResponse)]
     // Approval {
@@ -199,4 +199,11 @@ pub enum QueryMsg {
 #[cw_serde]
 pub struct MinterResponse {
     pub minter: Option<String>,
+}
+
+#[cw_serde]
+pub struct UserInfoResponse {
+    pub owned: Vec<Uint128>,
+    pub owned_index: Uint128,
+    pub balances: Uint128,
 }

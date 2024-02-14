@@ -4,9 +4,10 @@ use cosmwasm_std::{to_json_binary, Binary, Deps, Env, StdResult, Uint128};
 
 use cw721::{ContractInfoResponse, NftInfoResponse, NumTokensResponse, OwnerOfResponse};
 
-use crate::msg::{MinterResponse, QueryMsg};
+use crate::msg::{MinterResponse, QueryMsg, UserInfoResponse};
 use crate::state::{
-    BALANCES, BASE_TOKEN_URI, DECIMALS, LOCKED, MINTED, NAME, OWNER_OF, SYMBOL, TOTAL_SUPPLY,
+    BALANCES, BASE_TOKEN_URI, DECIMALS, LOCKED, MINTED, NAME, OWNED, OWNED_INDEX, OWNER_OF, SYMBOL,
+    TOTAL_SUPPLY,
 };
 
 // const DEFAULT_LIMIT: u32 = 10;
@@ -48,6 +49,21 @@ fn owner_of(
     Ok(OwnerOfResponse {
         owner,
         approvals: vec![],
+    })
+}
+
+fn user_info(deps: Deps, _env: Env, address: String) -> StdResult<UserInfoResponse> {
+    let owned = OWNED.may_load(deps.storage, address.clone())?.unwrap_or(vec![]);
+    let owned_index = OWNED_INDEX
+        .may_load(deps.storage, address.clone())?
+        .unwrap_or(Uint128::zero());
+    let balances = BALANCES
+        .may_load(deps.storage, &deps.api.addr_validate(&address)?)?
+        .unwrap_or(Uint128::zero());
+    Ok(UserInfoResponse {
+        owned,
+        owned_index,
+        balances,
     })
 }
 
@@ -273,6 +289,8 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
             token_id,
             include_expired.unwrap_or(false),
         )?),
+        // Allows us to view state of a user
+        QueryMsg::UserInfo { address } => to_json_binary(&user_info(deps, env, address)?),
         QueryMsg::IsLocked { token_id } => to_json_binary(&is_locked(deps, env, token_id)?),
         // QueryMsg::FullInfo {} => {
         //     let minted = MINTED.load(deps.storage)?;
