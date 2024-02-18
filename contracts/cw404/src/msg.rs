@@ -1,5 +1,8 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
-use cosmwasm_std::{Binary, Uint128};
+use cosmwasm_std::{Binary, Coin, Empty, Uint128, Uint256};
+use cw20::Cw20ReceiveMsg;
+use cw721::Cw721ReceiveMsg;
+use cw_ownable::{cw_ownable_execute, cw_ownable_query};
 use cw_utils::Expiration;
 
 #[cw_serde]
@@ -22,9 +25,24 @@ pub struct InstantiateMsg {
 // This is like Cw721ExecuteMsg but we add a Mint command for an owner
 // to make this stand-alone. You will likely want to remove mint and
 // use other control logic in any contract that inherits this.
+#[cw_ownable_execute]
 #[cw_serde]
 pub enum ExecuteMsg {
     // Transfer is a base message to move a token to another account without triggering actions
+    Receive(Cw20ReceiveMsg),
+    ReceiveNft(Cw721ReceiveMsg),
+    NativeMint{
+        recipient: String,
+        merkle_proof: Vec<Vec<u8>>,
+        hashed_address: Vec<u8>,
+    },
+    SetWithdrawAddress { address: String },
+    /// Removes the withdraw address, so fees are sent to the contract. Only owner can call this.
+    RemoveWithdrawAddress {},
+    /// Withdraw from the contract to the given address. Anyone can call this,
+    /// which is okay since withdraw address has been set by owner.
+    WithdrawFunds { amount: Coin },
+
     TransferFrom {
         owner: String,
         recipient: String,
@@ -91,11 +109,26 @@ pub enum ExecuteMsg {
         state: bool,
     },
     SetBaseTokenUri {
+        id: u8,
         uri: String,
     },
+
+    Mint {
+        /// Unique ID of the NFT
+        token_id: String,
+        /// The owner of the newly minter NFT
+        owner: String,
+        /// Universal resource identifier for this NFT
+        /// Should point to a JSON file that conforms to the ERC721
+        /// Metadata JSON Schema
+        token_uri: Option<String>,
+        /// Any custom extension used by this contract
+        extension: Empty,
+    },
+    Burn { token_id: String },
 }
 
-// #[cw_ownable_query]
+#[cw_ownable_query]
 #[cw_serde]
 #[derive(QueryResponses)]
 pub enum QueryMsg {
@@ -158,15 +191,28 @@ pub enum QueryMsg {
 
     #[returns(cw20::TokenInfoResponse)]
     TokenInfo {},
+
+    #[returns(cw721::TokensResponse)]
+    Tokens {
+        owner: String,
+        start_after: Option<String>,
+        limit: Option<u32>,
+    },
+
+    #[returns(cw721::TokensResponse)]
+    AllTokens {
+        start_after: Option<String>,
+        limit: Option<u32>,
+    },
     // With MetaData Extension.
     // Returns the result of both `NftInfo` and `OwnerOf` as one query as an optimization
     // for clients
-    // #[returns(cw721::AllNftInfoResponse<Q>)]
-    // AllNftInfo {
-    //     token_id: String,
-    //     // unset or false will filter out expired approvals, you must set to true to see them
-    //     include_expired: Option<bool>,
-    // },
+    #[returns(cw721::AllNftInfoResponse)]
+    AllNftInfo {
+        token_id: String,
+        // unset or false will filter out expired approvals, you must set to true to see them
+        include_expired: Option<bool>,
+    },
 
     // With Enumerable extension.
     // Returns all tokens owned by the given address, [] if unset.
@@ -206,4 +252,12 @@ pub struct UserInfoResponse {
     pub owned: Vec<Uint128>,
     pub owned_index: Uint128,
     pub balances: Uint128,
+}
+
+#[cw_serde]
+pub struct ContractInfoResponse {
+    pub name: String,
+    pub symbol: String,
+    pub decimals: u8,
+    pub total_supply: Uint128,
 }

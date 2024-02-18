@@ -39,4 +39,16 @@ pub enum ContractError {
 
     #[error("No withdraw address set")]
     NoWithdrawAddress {},
+
+    #[error("Invalid input!")]
+    InvalidInput {},
+
+    #[error("Not enough token balance!")]
+    InsufficientBalance {},
+    
+    #[error("Incorrect amount!")]
+    IncorrectAmount {},
+
+    #[error("Not whitelisted! wait for public")]
+    NotWhitelisted {},
 }

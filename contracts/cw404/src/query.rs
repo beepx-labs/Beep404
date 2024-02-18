@@ -1,23 +1,27 @@
 use cw20::{BalanceResponse, TokenInfoResponse};
 
-use cosmwasm_std::{to_json_binary, Binary, Deps, Env, StdResult, Uint128};
+use cosmwasm_std::{to_json_binary, Addr, Binary, BlockInfo, Deps, Empty, Env, Order, StdResult, Uint128};
 
-use cw721::{ContractInfoResponse, NftInfoResponse, NumTokensResponse, OwnerOfResponse};
+use cw721::{AllNftInfoResponse, NftInfoResponse, NumTokensResponse, OwnerOfResponse, TokensResponse};
+use cw_storage_plus::Bound;
 
-use crate::msg::{MinterResponse, QueryMsg, UserInfoResponse};
+use crate::msg::{ContractInfoResponse, MinterResponse, QueryMsg, UserInfoResponse};
 use crate::state::{
-    BALANCES, BASE_TOKEN_URI, DECIMALS, LOCKED, MINTED, NAME, OWNED, OWNED_INDEX, OWNER_OF, SYMBOL,
-    TOTAL_SUPPLY,
+    Approval, TokenInfo, BALANCES, CONTRACT_INFO, DECIMALS, LOCKED, MINTED, NAME, OWNED, OWNED_INDEX, OWNER_OF, SYMBOL, TOKENS, TOKEN_URI, TOTAL_SUPPLY
 };
 
-// const DEFAULT_LIMIT: u32 = 10;
-// const MAX_LIMIT: u32 = 1000;
+const DEFAULT_LIMIT: u32 = 10;
+const MAX_LIMIT: u32 = 1000;
 
 fn contract_info(deps: Deps) -> StdResult<ContractInfoResponse> {
     // self.contract_info.load(deps.storage)
-    let name = NAME.load(deps.storage)?;
-    let symbol = SYMBOL.load(deps.storage)?;
-    Ok(ContractInfoResponse { name, symbol })
+    // let name = NAME.load(deps.storage)?;
+    // let symbol = SYMBOL.load(deps.storage)?;
+    // let decimals =DECIMALS.load(deps.storage)?;
+    // let total_supply = TOTAL_SUPPLY.load(deps.storage)?;
+    let contract_info = CONTRACT_INFO.load(deps.storage)?;
+    // Ok(ContractInfoResponse { name, symbol, decimals, total_supply })
+    Ok(contract_info)
 }
 
 fn num_tokens(deps: Deps) -> StdResult<NumTokensResponse> {
@@ -29,9 +33,9 @@ fn num_tokens(deps: Deps) -> StdResult<NumTokensResponse> {
 }
 
 fn nft_info(deps: Deps, token_id: String) -> StdResult<NftInfoResponse> {
-    let base_uri = BASE_TOKEN_URI.load(deps.storage)?; // TODO: remove this line
+    let base_uri = TOKEN_URI.load(deps.storage, token_id)?; // TODO: remove this line
     Ok(NftInfoResponse {
-        token_uri: Some(base_uri + &token_id),
+        token_uri: Some(base_uri),
         extension: None,
     })
 }
@@ -302,15 +306,15 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
         //         include_expired.unwrap_or(false),
         //     )?)
         // }
-        // QueryMsg::AllNftInfo {
-        //     token_id,
-        //     include_expired,
-        // } => to_json_binary(&self.all_nft_info(
-        //     deps,
-        //     env,
-        //     token_id,
-        //     include_expired.unwrap_or(false),
-        // )?),
+        QueryMsg::AllNftInfo {
+            token_id,
+            include_expired,
+        } => to_json_binary(&all_nft_info(
+            deps,
+            env,
+            token_id,
+            include_expired.unwrap_or(false),
+        )?),
         // QueryMsg::Operator {
         //     owner,
         //     operator,
@@ -336,14 +340,15 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
         //     limit,
         // )?),
         QueryMsg::NumTokens {} => to_json_binary(&num_tokens(deps)?),
-        // QueryMsg::Tokens {
-        //     owner,
-        //     start_after,
-        //     limit,
-        // } => to_json_binary(&self.tokens(deps, owner, start_after, limit)?),
-        // QueryMsg::AllTokens { start_after, limit } => {
-        //     to_json_binary(&self.all_tokens(deps, start_after, limit)?)
-        // }
+        QueryMsg::Ownership {  } => to_json_binary(&ownership(deps)?),
+        QueryMsg::Tokens {
+            owner,
+            start_after,
+            limit,
+        } => to_json_binary(&tokens(deps, owner, start_after, limit)?),
+        QueryMsg::AllTokens { start_after, limit } => {
+            to_json_binary(&all_tokens(deps, start_after, limit)?)
+        }
         // QueryMsg::Approval {
         //     token_id,
         //     spender,
@@ -372,6 +377,65 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     }
 }
 
+
+fn all_nft_info(
+    deps: Deps,
+    env: Env,
+    token_id: String,
+    include_expired: bool,
+) -> StdResult<AllNftInfoResponse> {
+    let info = TOKENS.load(deps.storage, &token_id)?;
+    Ok(AllNftInfoResponse {
+        access: OwnerOfResponse {
+            owner: info.owner.to_string(),
+            approvals: humanize_approvals(&env.block, &info, include_expired),
+        },
+        info: NftInfoResponse {
+            token_uri: info.token_uri,
+            extension: None,
+        },
+    })
+}
+
+
+fn all_tokens(
+    deps: Deps,
+    start_after: Option<String>,
+    limit: Option<u32>,
+) -> StdResult<TokensResponse> {
+    let limit = limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT) as usize;
+    let start = start_after.map(|s| Bound::ExclusiveRaw(s.into()));
+
+    let tokens: StdResult<Vec<String>> = TOKENS
+        .range(deps.storage, start, None, Order::Ascending)
+        .take(limit)
+        .map(|item| item.map(|(k, _)| k))
+        .collect();
+
+    Ok(TokensResponse { tokens: tokens? })
+}
+
+fn tokens(
+    deps: Deps,
+    owner: String,
+    start_after: Option<String>,
+    limit: Option<u32>,
+) -> StdResult<TokensResponse> {
+    let limit = limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT) as usize;
+    let start = start_after.map(|s| Bound::ExclusiveRaw(s.into()));
+
+    let owner_addr = deps.api.addr_validate(&owner)?;
+    let tokens: Vec<String> =TOKENS
+        .idx
+        .owner
+        .prefix(owner_addr)
+        .keys(deps.storage, start, None, Order::Ascending)
+        .take(limit)
+        .collect::<StdResult<Vec<_>>>()?;
+
+    Ok(TokensResponse { tokens })
+}
+
 pub fn minter(deps: Deps) -> StdResult<MinterResponse> {
     let minter = cw_ownable::get_ownership(deps.storage)?
         .owner
@@ -380,9 +444,9 @@ pub fn minter(deps: Deps) -> StdResult<MinterResponse> {
     Ok(MinterResponse { minter })
 }
 
-// pub fn ownership(deps: Deps) -> StdResult<cw_ownable::Ownership<Addr>> {
-//     cw_ownable::get_ownership(deps.storage)
-// }
+pub fn ownership(deps: Deps) -> StdResult<cw_ownable::Ownership<Addr>> {
+    cw_ownable::get_ownership(deps.storage)
+}
 
 // fn parse_approval(item: StdResult<(Addr, Expiration)>) -> StdResult<cw721::Approval> {
 //     item.map(|(spender, expires)| cw721::Approval {
@@ -391,21 +455,21 @@ pub fn minter(deps: Deps) -> StdResult<MinterResponse> {
 //     })
 // }
 
-// fn humanize_approvals<T>(
-//     block: &BlockInfo,
-//     info: &TokenInfo<T>,
-//     include_expired: bool,
-// ) -> Vec<cw721::Approval> {
-//     info.approvals
-//         .iter()
-//         .filter(|apr| include_expired || !apr.is_expired(block))
-//         .map(humanize_approval)
-//         .collect()
-// }
+fn humanize_approvals<T>(
+    block: &BlockInfo,
+    info: &TokenInfo<T>,
+    include_expired: bool,
+) -> Vec<cw721::Approval> {
+    info.approvals
+        .iter()
+        .filter(|apr| include_expired || !apr.is_expired(block))
+        .map(humanize_approval)
+        .collect()
+}
 
-// fn humanize_approval(approval: &Approval) -> cw721::Approval {
-//     cw721::Approval {
-//         spender: approval.spender.to_string(),
-//         expires: approval.expires,
-//     }
-// }
+fn humanize_approval(approval: &Approval) -> cw721::Approval {
+    cw721::Approval {
+        spender: approval.spender.to_string(),
+        expires: approval.expires,
+    }
+}

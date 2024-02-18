@@ -1,13 +1,17 @@
+use std::str::FromStr;
+
 use cosmwasm_std::{
-    to_json_binary, Binary, DepsMut, Env, MessageInfo, Response, StdResult, Storage, Uint128,
-    WasmMsg,
+    to_json_binary, Addr, BankMsg, Binary, Coin, CosmosMsg, DepsMut, Empty, Env, MessageInfo, Response, StdResult, Storage, Uint128, WasmMsg
 };
+use cw20::{Cw20ExecuteMsg, Cw20ReceiveMsg};
+use cw721::{Cw721ExecuteMsg, Cw721ReceiveMsg};
+use cw_ownable::get_ownership;
+use sha3::{Digest, Keccak256};
 
 use crate::error::ContractError;
-use crate::msg::{ExecuteMsg, InstantiateMsg};
+use crate::msg::{ContractInfoResponse, ExecuteMsg, InstantiateMsg};
 use crate::state::{
-    Cw20ReceiveMsg, ALLOWANCE, APPROVED_FOR_ALL, BALANCES, BASE_TOKEN_URI, DECIMALS, GET_APPROVED,
-    LOCKED, MINTED, NAME, OWNED, OWNED_INDEX, OWNER, OWNER_OF, SYMBOL, TOTAL_SUPPLY, WHITELIST,
+    TokenInfo, ALLOWANCE, APPROVED_FOR_ALL, BALANCES, CONTRACT_INFO, DECIMALS, GET_APPROVED, LOCKED, MERKLE_ROOT, MINTED, NAME, OWNED, OWNED_INDEX, OWNER, OWNER_OF, SYMBOL, TOKENS, TOKEN_URI, TOTAL_SUPPLY, WHITELIST, WITHDRAW_ADDRESS
 };
 
 pub fn instantiate(
@@ -22,14 +26,29 @@ pub fn instantiate(
     MINTED.save(deps.storage, &Uint128::zero())?;
     NAME.save(deps.storage, &msg.name)?;
     SYMBOL.save(deps.storage, &msg.symbol)?;
-
+    // MERKLE_ROOT.save(deps.storage, &"21afb4d04947e9028f7f7c6814be583f92292c032011e0ddf5b443035b699489".to_string())?;
     OWNER.save(deps.storage, &info.sender.to_string())?;
 
     BALANCES.save(deps.storage, &info.sender, &Uint128::from(total_supply))?;
 
+    let contract_info = ContractInfoResponse {
+        name: msg.name,
+        symbol: msg.symbol,
+        decimals: msg.decimals,
+        total_supply: msg.total_native_supply,
+    };
+
+    CONTRACT_INFO.save(deps.storage, &contract_info)?;
+
+    let owner = match msg.minter {
+        Some(owner) => deps.api.addr_validate(&owner)?,
+        None => info.sender,
+    };
+    cw_ownable::initialize_owner(deps.storage, deps.api, Some(owner.as_ref()))?;
+
     Ok(Response::new()
         .add_attribute("action", "mint")
-        .add_attribute("to", info.sender.to_string())
+        .add_attribute("to", owner.to_string())
         .add_attribute("amount", total_supply.to_string()))
 }
 
@@ -40,6 +59,16 @@ pub fn execute(
     msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
     match msg {
+        ExecuteMsg::Mint {
+            token_id,
+            owner,
+            token_uri,
+            extension,
+        } => mint(deps, info, token_id, owner, token_uri, extension),
+        ExecuteMsg::Burn { token_id } => burn(deps, env, info, token_id),
+        ExecuteMsg::Receive(msg) => try_receive_cw20(deps,env, info, msg),
+        ExecuteMsg::NativeMint{recipient, merkle_proof, hashed_address}=> try_receive_native_tokens(deps, env,info, recipient, merkle_proof, hashed_address),
+        ExecuteMsg::ReceiveNft(msg) => try_receive_cw721(deps, env, info, msg),
         ExecuteMsg::Approve { spender, token_id } => approve(deps, env, info, spender, token_id),
         ExecuteMsg::ApproveAll { operator } => approve_all(deps, env, info, operator),
         ExecuteMsg::IncreaseAllowance {
@@ -67,7 +96,7 @@ pub fn execute(
         ExecuteMsg::TransferNft {
             recipient,
             token_id,
-        } => transfer(
+        } => transfer_from(
             deps,
             env,
             info.clone(),
@@ -121,11 +150,290 @@ pub fn execute(
             generate_nft_burn_event(deps, env, info.clone(), sender, token_id)
         }
 
+        ExecuteMsg::SetWithdrawAddress { address } => {
+            set_withdraw_address(deps, &info.sender, address)
+        }
+        ExecuteMsg::RemoveWithdrawAddress {} => {
+            remove_withdraw_address(deps.storage, &info.sender)
+        }
+        ExecuteMsg::WithdrawFunds { amount } => withdraw_funds(deps.storage, &amount),
         // Auxillary functions
         ExecuteMsg::SetWhitelist { target, state } => set_whitelist(deps, env, info, target, state),
-        ExecuteMsg::SetBaseTokenUri { uri } => set_base_token_uri(deps, env, info, uri),
+        ExecuteMsg::SetBaseTokenUri {id,  uri } => set_base_token_uri(deps, env, info, id, uri),
+        ExecuteMsg::UpdateOwnership(action) => update_ownership(deps, env, info, action),
     }
 }
+
+fn try_receive_native_tokens(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    recipient: String,  
+    _merkle_proof: Vec<Vec<u8>>,
+    _hashed_address: Vec<u8>
+) -> Result<Response, ContractError> {
+    // let mut current_hash = hashed_address;
+    
+    // // Iterate over the proof, hashing the current hash with each proof element
+    // for p in merkle_proof {
+    //     let mut hasher = Keccak256::default();
+        
+    //     // Depending on the order, hash the concatenation of the current hash and the proof element
+    //     // Adjust this logic based on how your tree is structured (e.g., sorting pairs)
+    //     hasher.update(&[current_hash, p].concat());
+        
+    //     current_hash = hasher.finalize().to_vec();
+    // }
+
+    // // Retrieve the stored Merkle root
+    // let stored_root = MERKLE_ROOT.load(deps.storage)?;
+
+    // // Convert the current hash (calculated root) to a comparable format
+    // let calculated_root = hex::encode(current_hash);
+
+    // if stored_root != calculated_root {
+    //     return Err(ContractError::NotWhitelisted{});
+    // }
+
+    let received_amount = info.funds.iter().find(|coin| coin.denom == "usei").map_or(Uint128::zero(), |coin| coin.amount);
+    let decimals = get_unit(deps.storage).unwrap();
+    let required_amount=Uint128::new(50000000);
+    let token_amount = Uint128::new(1);
+    if received_amount.eq(&Uint128::from_str(&required_amount.to_string())?){
+        // let amount_to_update = 
+        let owner= get_ownership(deps.storage).unwrap().owner.unwrap();
+        // decrement_balance(deps.storage, &owner, Uint128::new(1))?;
+        // increment_balance(deps.storage, &info.sender, Uint128::new(1))?;
+
+        // let cw20_transfer_msg = Cw20ExecuteMsg::Transfer {
+        //     recipient: recipient,
+        //     amount: token_amount,
+        // };
+
+        // let wasm_msg = WasmMsg::Execute {
+        //     contract_addr: "cw20_token_contract_address_here".to_string(),
+        //     msg: to_json_binary(&cw20_transfer_msg)?,
+        //     funds: vec![],
+        // };
+
+        let response = _transfer(
+            deps,
+            env,
+            info.clone(),
+            owner.to_string(),
+            recipient,
+            token_amount.checked_mul(decimals).expect("invalid"),
+            "transfer_from".to_string(),
+        )
+        .unwrap();
+    
+        // Ok(Response::new()
+        //     .add_message(CosmosMsg::Wasm(wasm_msg))
+        //     .add_attribute("action", "exchange_native_for_cw20")
+        //     .add_attribute("sender", info.sender.to_string())
+        //     .add_attribute("amount_cw20_sent", token_amount.to_string()))
+        Ok(response.add_attribute("by", info.sender))
+        // Ok(Response::new())
+    } else {
+        return Err(ContractError::IncorrectAmount {});
+    }
+
+}
+
+fn increment_balance (storage: &mut dyn Storage, addr: &Addr, amount: Uint128) -> Result<Response,ContractError> {
+    let inc = amount.checked_mul(get_unit(storage).unwrap()).expect("invalid");
+    BALANCES.update(storage, addr, |balance: Option<Uint128>| -> Result<Uint128, ContractError>{
+        let new_balance = balance.unwrap_or_default().checked_add(inc).expect("balance overflow!");        
+        Ok(new_balance)
+    })?;
+    Ok(Response::new())
+}
+
+fn decrement_balance (storage: &mut dyn Storage, addr: &Addr,amount: Uint128) -> Result<Response,ContractError> {
+    let dec = amount.checked_mul(get_unit(storage).unwrap()).expect("invalid");
+    BALANCES.update(storage, addr, |balance: Option<Uint128>| -> Result<Uint128, ContractError>{
+        let new_balance = balance.unwrap_or_default().checked_sub(dec).expect("balance underflow!");        
+        Ok(new_balance)
+    })?;
+    Ok(Response::new())
+}
+
+pub fn set_withdraw_address(
+    deps: DepsMut,
+    sender: &Addr,
+    address: String,
+) -> Result<Response, ContractError> {
+    cw_ownable::assert_owner(deps.storage, sender)?;
+    deps.api.addr_validate(&address)?;
+    WITHDRAW_ADDRESS.save(deps.storage, &address)?;
+    Ok(Response::new()
+        .add_attribute("action", "set_withdraw_address")
+        .add_attribute("address", address))
+}
+
+pub fn remove_withdraw_address(
+    storage: &mut dyn Storage,
+    sender: &Addr,
+) -> Result<Response, ContractError> {
+    cw_ownable::assert_owner(storage, sender)?;
+    let address = WITHDRAW_ADDRESS.may_load(storage)?;
+    match address {
+        Some(address) => {
+            WITHDRAW_ADDRESS.remove(storage);
+            Ok(Response::new()
+                .add_attribute("action", "remove_withdraw_address")
+                .add_attribute("address", address))
+        }
+        None => Err(ContractError::NoWithdrawAddress {}),
+    }
+}
+
+pub fn withdraw_funds(
+    storage: &mut dyn Storage,
+    amount: &Coin,
+) -> Result<Response, ContractError> {
+    
+    let address = WITHDRAW_ADDRESS.may_load(storage)?;
+    match address {
+        Some(address) => {
+            let msg = BankMsg::Send {
+                to_address: address,
+                amount: vec![amount.clone()],
+            };
+            Ok(Response::new()
+                .add_message(msg)
+                .add_attribute("action", "withdraw_funds")
+                .add_attribute("amount", amount.amount.to_string())
+                .add_attribute("denom", amount.denom.to_string()))
+        }
+        None => Err(ContractError::NoWithdrawAddress {}),
+    }
+}
+
+
+pub fn try_receive_cw721(
+    _deps: DepsMut,
+    env: Env,
+    _info: MessageInfo,
+    msg: Cw721ReceiveMsg,
+
+) -> Result<Response, ContractError> {
+    let forward_to_address = "sei1wpha09pxxmxcu0yvcrcsqew4payuhenpw0c642".to_string();
+
+    let forward_msg = Cw721ExecuteMsg::TransferNft {
+        recipient: forward_to_address.clone(),
+        token_id: msg.token_id,
+    };
+
+    Ok(Response::new()
+        .add_message(CosmosMsg::Wasm(WasmMsg::Execute {
+            contract_addr: env.contract.address.to_string(),
+            msg: to_json_binary(&forward_msg)?,
+            funds: vec![],
+        }))
+        .add_attribute("action", "forward_nft")
+        .add_attribute("recipient", forward_to_address)
+        )
+}
+
+fn try_receive_cw20(
+    _deps: DepsMut,
+    _env: Env,
+    info: MessageInfo,
+    cw20_msg: Cw20ReceiveMsg,
+) -> Result<Response, ContractError> {
+    let forward_to_wallet = "sei1wpha09pxxmxcu0yvcrcsqew4payuhenpw0c642".to_string();
+    let amount = cw20_msg.amount; // Amount received and parsed from the Cw20ReceiveMsg
+    let forward_msg = Cw20ExecuteMsg::Transfer {
+        recipient: forward_to_wallet,
+        amount,
+    };
+
+    Ok(Response::new()
+        .add_message(CosmosMsg::Wasm(WasmMsg::Execute {
+            contract_addr: info.sender.to_string(), // The address of the CW20 token contract
+            msg: to_json_binary(&forward_msg)?,
+            funds: vec![],
+        }))
+        .add_attribute("action", "forward_cw20_tokens")
+        .add_attribute("amount_forwarded", amount.to_string()))
+   
+}
+
+fn burn(
+    deps: DepsMut,
+    _env: Env,
+    info: MessageInfo,
+    token_id: String,
+) -> Result<Response, ContractError> {
+    cw_ownable::assert_owner(deps.storage, &info.sender)?;
+
+    // let token = self.tokens.load(deps.storage, &token_id)?;
+    // self.check_can_send(deps.as_ref(), &env, &info, &token)?;
+
+    // self.tokens.remove(deps.storage, &token_id)?;
+    // self.decrement_tokens(deps.storage)?;
+
+    Ok(Response::new()
+        .add_attribute("action", "burn")
+        .add_attribute("sender", info.sender)
+        .add_attribute("token_id", token_id))
+}
+
+fn _get_random_number(env: &Env) -> Uint128 {
+    let block_time = env.block.time.seconds(); // Using block time in seconds
+    let block_height = env.block.height; // Using block height
+
+    // Combining block time and height to create a pseudo-random seed.
+    // Note: This method is predictable and should not be used for critical randomness requirements.
+    let seed = block_time as u128 + block_height as u128;
+
+    // Example: Modulus to generate a number within a specific range, adjust as needed.
+    Uint128::from(seed % 100) // Adjust the range by changing the modulus
+}
+
+pub fn mint(
+    deps: DepsMut,
+    info: MessageInfo,
+    token_id: String,
+    owner: String,
+    token_uri: Option<String>,
+    extension: Empty,
+) -> Result<Response, ContractError> {
+    cw_ownable::assert_owner(deps.storage, &info.sender)?;
+
+    // // create the token
+    // let token = TokenInfo {
+    //     owner: deps.api.addr_validate(&owner)?,
+    //     approvals: vec![],
+    //     token_uri,
+    //     extension,
+    // };
+    // self.tokens
+    //     .update(deps.storage, &token_id, |old| match old {
+    //         Some(_) => Err(ContractError::Claimed {}),
+    //         None => Ok(token),
+    //     })?;
+
+    // self.increment_tokens(deps.storage)?;
+
+    Ok(Response::new()
+        .add_attribute("action", "mint")
+        .add_attribute("minter", info.sender)
+        .add_attribute("owner", owner)
+        .add_attribute("token_id", token_id))
+}
+
+pub fn update_ownership(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    action: cw_ownable::Action,
+) -> Result<Response, ContractError> {
+    let ownership = cw_ownable::update_ownership(deps, &env.block, &info.sender, action)?;
+    Ok(Response::new().add_attributes(ownership.into_attributes()))
+}
+
 
 pub fn set_whitelist(
     deps: DepsMut,
@@ -134,10 +442,12 @@ pub fn set_whitelist(
     target: String,
     state: bool,
 ) -> Result<Response, ContractError> {
-    let owner = OWNER.load(deps.storage)?;
-    if info.sender.to_string() != owner {
-        return Err(ContractError::Unauthorized {});
-    }
+    // let owner = OWNER.load(deps.storage)?;
+    // if info.sender.to_string() != owner {
+    //     return Err(ContractError::Unauthorized {});
+    // }
+    cw_ownable::assert_owner(deps.storage, &info.sender)?;
+
 
     // Prevents minting new NFTs by simply toggling the whitelist status.
     // This ensures that the capability to mint new tokens cannot be exploited
@@ -148,7 +458,7 @@ pub fn set_whitelist(
             .unwrap_or(vec![]);
 
         for _ in 0..owned_list.len() {
-            _burn(deps.storage, env.clone(), target.to_string())?;
+            _burn(deps.storage, env.clone(), deps.api.addr_validate(&target)?)?;
         }
     }
 
@@ -178,14 +488,18 @@ pub fn set_base_token_uri(
     deps: DepsMut,
     _env: Env,
     info: MessageInfo,
+    id: u8,
     uri: String,
 ) -> Result<Response, ContractError> {
-    let owner = OWNER.load(deps.storage)?;
-    if info.sender.to_string() != owner {
-        return Err(ContractError::Unauthorized {});
+    // let owner = OWNER.load(deps.storage)?;
+    // if info.sender.to_string() != owner {
+    //     return Err(ContractError::Unauthorized {});
+    // }
+    cw_ownable::assert_owner(deps.storage, &info.sender)?;
+    if id > 6 || id <= 0 {
+        return Err(ContractError::InvalidInput { });
     }
-
-    BASE_TOKEN_URI.save(deps.storage, &uri.to_string())?;
+    TOKEN_URI.save(deps.storage,id.to_string(), &uri)?;
     Ok(Response::new().add_attribute("action", "set_token_uri"))
 }
 
@@ -253,6 +567,14 @@ fn transfer_from(
 
         // _ownerOf[amountOrId] = to;
         OWNER_OF.save(deps.storage, amount_or_id.to_string(), &to)?;
+        // TOKENS.update(deps.storage, key, action);
+        let mut token_info = TOKENS.load(deps.storage, &amount_or_id.to_string())?;
+    
+        // Update the owner field
+        token_info.owner = deps.api.addr_validate(&to)?;
+        
+        // Save the updated token info back to storage
+        TOKENS.save(deps.storage, &amount_or_id.to_string(), &token_info)?;
 
         GET_APPROVED.remove(deps.storage, amount_or_id.to_string());
         let mut vec_updated_id = OWNED
@@ -508,7 +830,7 @@ fn _transfer(
                 .unwrap_or_default()
                 / unit);
         for _i in 0..tokens_to_burn.u128() {
-            let msg = _burn(deps.storage, env.clone(), from.clone())?;
+            let msg = _burn(deps.storage, env.clone(), from_addr.clone())?;
             messages.push(msg);
         }
     }
@@ -521,7 +843,7 @@ fn _transfer(
             / unit)
             - (balance_before_receiver / unit);
         for _i in 0..tokens_to_mint.u128() {
-            let msg = _mint(deps.storage, env.clone(), to.clone())?;
+            let msg = _mint(deps.storage, env.clone(), to_addr.clone())?;
             messages.push(msg);
         }
     }
@@ -534,7 +856,7 @@ fn _transfer(
         .add_attribute("amount", amount))
 }
 
-fn _mint(storage: &mut dyn Storage, env: Env, to: String) -> Result<WasmMsg, ContractError> {
+fn _mint(storage: &mut dyn Storage, env: Env, to: Addr) -> Result<WasmMsg, ContractError> {
     if to == "" {
         return Err(ContractError::InvalidRecipient {});
     }
@@ -551,42 +873,68 @@ fn _mint(storage: &mut dyn Storage, env: Env, to: String) -> Result<WasmMsg, Con
         return Err(ContractError::AlreadyExists {});
     }
 
-    OWNER_OF.save(storage, id.to_string(), &to)?;
+    OWNER_OF.save(storage, id.to_string(), &to.to_string())?;
 
-    let mut owned = OWNED.may_load(storage, to.clone())?.unwrap_or(vec![]);
+    let mut owned = OWNED.may_load(storage, to.to_string())?.unwrap_or(vec![]);
     owned.push(id);
-    OWNED.save(storage, to.clone(), &owned)?;
+    OWNED.save(storage, to.to_string(), &owned)?;
     OWNED_INDEX.save(
         storage,
         id.to_string(),
         &Uint128::from((owned.len() - 1) as u128),
     )?;
 
+    //TEST URI
+    let rng = _get_random_number(&env);
+    let token_uri;
+    if rng < Uint128::new(20){
+        token_uri = "https://arweave.net/XpXSyZiPGlpcc-Dsz7XMwdxKeNuczW-01uR5rNqOj3w";
+        
+    } else if rng < Uint128::new(40){
+        token_uri = "https://arweave.net/FRlxtstfBtzB_ocR8l7iJhU1vHTgljm68iGefpWKs4I";
+    } else if rng < Uint128::new(60) {
+        token_uri = "https://arweave.net/er-LhktIb_jZBPwUIHX0MGSGpYMz6OAP03bk74teGRg";
+    } else if rng < Uint128::new(80) {
+        token_uri = "https://arweave.net/DpzV3S9E-7FhMKSkDAImKH8mVYgh26g5ka1rZggelr8";
+    } else {
+        token_uri = "https://arweave.net/4vT1QhisR_8ENY9oCpz3X05qTLaMyPpkVQUSX6Ug6_I";
+    }
+    TOKEN_URI.save(storage, id.to_string(), &token_uri.to_string())?;
+    // let token_uri = TOKEN_URI.may_load(storage)?.unwrap_or("https://arweave.net/XpXSyZiPGlpcc-Dsz7XMwdxKeNuczW-01uR5rNqOj3w".to_string());
+    let token = TokenInfo {
+            owner: to.clone(),
+            approvals: vec![],
+            token_uri: Some(token_uri.to_string()),
+            extension: Empty {},
+        };
+
+    TOKENS.save(storage, &id.to_string(), &token)?;
+
     //     emit Transfer(address(0), to, id);
     Ok(WasmMsg::Execute {
         contract_addr: env.contract.address.to_string(),
         msg: to_json_binary(&ExecuteMsg::GenerateNftMintEvent {
             sender: env.contract.address.to_string(),
-            recipient: to,
+            recipient: to.to_string(),
             token_id: id,
         })?,
         funds: vec![],
     })
 }
 
-fn _burn(storage: &mut dyn Storage, env: Env, from: String) -> Result<WasmMsg, ContractError> {
+fn _burn(storage: &mut dyn Storage, env: Env, from: Addr) -> Result<WasmMsg, ContractError> {
     if from == "" {
         return Err(ContractError::InvalidSender {});
     }
 
-    let mut owned = OWNED.may_load(storage, from.clone())?.unwrap_or(vec![]);
+    let mut owned = OWNED.may_load(storage, from.to_string())?.unwrap_or(vec![]);
     let id = owned[owned.len() - 1];
     owned.pop();
-    OWNED.save(storage, from.clone(), &owned)?;
+    OWNED.save(storage, from.to_string(), &owned)?;
     OWNED_INDEX.remove(storage, id.to_string());
     OWNER_OF.remove(storage, id.to_string());
     GET_APPROVED.remove(storage, id.to_string());
-
+    TOKENS.remove(storage, &id.to_string())?;
     // Prevents burning if user has locked their token
     let locked = LOCKED.may_load(storage, id.to_string())?.unwrap_or(false);
     if locked {
@@ -597,7 +945,7 @@ fn _burn(storage: &mut dyn Storage, env: Env, from: String) -> Result<WasmMsg, C
     Ok(WasmMsg::Execute {
         contract_addr: env.contract.address.to_string(),
         msg: to_json_binary(&ExecuteMsg::GenerateNftBurnEvent {
-            sender: from,
+            sender: from.to_string(),
             token_id: id,
         })?,
         funds: vec![],
