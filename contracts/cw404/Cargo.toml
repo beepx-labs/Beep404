@@ -1,6 +1,6 @@
 [package]
 name          = "cw404"
-description   = "Basic implementation of cw404 NFTs"
+description   = "Basic implementation of cw404"
 authors       = []
 version       = { workspace = true }
 edition       = { workspace = true }

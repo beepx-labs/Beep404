@@ -132,27 +132,10 @@ pub fn execute(
             msg,
             token_id,
         ),
-        // Additional feature added by dojo team to prevent accidental burning of CW721 tokens that a user may wish to keep (as cw20 transfers might burn tokens)
-        ExecuteMsg::SetLock { token_id, state } => set_lock(deps, env, info, token_id, state),
-
-        // Event functions
-        ExecuteMsg::GenerateNftEvent {
-            sender,
-            recipient,
-            token_id,
-        } => generate_nft_event(deps, env, info.clone(), sender, recipient, token_id),
-        ExecuteMsg::GenerateNftMintEvent {
-            sender,
-            recipient,
-            token_id,
-        } => generate_nft_mint_event(deps, env, info.clone(), sender, recipient, token_id),
-        ExecuteMsg::GenerateNftBurnEvent { sender, token_id } => {
-            generate_nft_burn_event(deps, env, info.clone(), sender, token_id)
-        }
 
         ExecuteMsg::SetWithdrawAddress { address } => {
             set_withdraw_address(deps, &info.sender, address)
-        }
+        },
         ExecuteMsg::RemoveWithdrawAddress {} => {
             remove_withdraw_address(deps.storage, &info.sender)
         }
@@ -200,21 +183,8 @@ fn try_receive_native_tokens(
     let required_amount=Uint128::new(50000000);
     let token_amount = Uint128::new(1);
     if received_amount.eq(&Uint128::from_str(&required_amount.to_string())?){
-        // let amount_to_update = 
         let owner= get_ownership(deps.storage).unwrap().owner.unwrap();
-        // decrement_balance(deps.storage, &owner, Uint128::new(1))?;
-        // increment_balance(deps.storage, &info.sender, Uint128::new(1))?;
-
-        // let cw20_transfer_msg = Cw20ExecuteMsg::Transfer {
-        //     recipient: recipient,
-        //     amount: token_amount,
-        // };
-
-        // let wasm_msg = WasmMsg::Execute {
-        //     contract_addr: "cw20_token_contract_address_here".to_string(),
-        //     msg: to_json_binary(&cw20_transfer_msg)?,
-        //     funds: vec![],
-        // };
+        
 
         let response = _transfer(
             deps,
@@ -227,11 +197,6 @@ fn try_receive_native_tokens(
         )
         .unwrap();
     
-        // Ok(Response::new()
-        //     .add_message(CosmosMsg::Wasm(wasm_msg))
-        //     .add_attribute("action", "exchange_native_for_cw20")
-        //     .add_attribute("sender", info.sender.to_string())
-        //     .add_attribute("amount_cw20_sent", token_amount.to_string()))
         Ok(response.add_attribute("by", info.sender))
         // Ok(Response::new())
     } else {
@@ -240,23 +205,7 @@ fn try_receive_native_tokens(
 
 }
 
-fn increment_balance (storage: &mut dyn Storage, addr: &Addr, amount: Uint128) -> Result<Response,ContractError> {
-    let inc = amount.checked_mul(get_unit(storage).unwrap()).expect("invalid");
-    BALANCES.update(storage, addr, |balance: Option<Uint128>| -> Result<Uint128, ContractError>{
-        let new_balance = balance.unwrap_or_default().checked_add(inc).expect("balance overflow!");        
-        Ok(new_balance)
-    })?;
-    Ok(Response::new())
-}
 
-fn decrement_balance (storage: &mut dyn Storage, addr: &Addr,amount: Uint128) -> Result<Response,ContractError> {
-    let dec = amount.checked_mul(get_unit(storage).unwrap()).expect("invalid");
-    BALANCES.update(storage, addr, |balance: Option<Uint128>| -> Result<Uint128, ContractError>{
-        let new_balance = balance.unwrap_or_default().checked_sub(dec).expect("balance underflow!");        
-        Ok(new_balance)
-    })?;
-    Ok(Response::new())
-}
 
 pub fn set_withdraw_address(
     deps: DepsMut,
@@ -360,6 +309,8 @@ fn try_receive_cw20(
    
 }
 
+
+//for v2
 fn burn(
     deps: DepsMut,
     _env: Env,
@@ -384,38 +335,20 @@ fn _get_random_number(env: &Env) -> Uint128 {
     let block_time = env.block.time.seconds(); // Using block time in seconds
     let block_height = env.block.height; // Using block height
 
-    // Combining block time and height to create a pseudo-random seed.
-    // Note: This method is predictable and should not be used for critical randomness requirements.
     let seed = block_time as u128 + block_height as u128;
-
-    // Example: Modulus to generate a number within a specific range, adjust as needed.
     Uint128::from(seed % 100) // Adjust the range by changing the modulus
 }
 
+//for v2
 pub fn mint(
     deps: DepsMut,
     info: MessageInfo,
     token_id: String,
     owner: String,
-    token_uri: Option<String>,
-    extension: Empty,
+    _token_uri: Option<String>,
+    _extension: Empty,
 ) -> Result<Response, ContractError> {
     cw_ownable::assert_owner(deps.storage, &info.sender)?;
-
-    // // create the token
-    // let token = TokenInfo {
-    //     owner: deps.api.addr_validate(&owner)?,
-    //     approvals: vec![],
-    //     token_uri,
-    //     extension,
-    // };
-    // self.tokens
-    //     .update(deps.storage, &token_id, |old| match old {
-    //         Some(_) => Err(ContractError::Claimed {}),
-    //         None => Ok(token),
-    //     })?;
-
-    // self.increment_tokens(deps.storage)?;
 
     Ok(Response::new()
         .add_attribute("action", "mint")
@@ -442,16 +375,8 @@ pub fn set_whitelist(
     target: String,
     state: bool,
 ) -> Result<Response, ContractError> {
-    // let owner = OWNER.load(deps.storage)?;
-    // if info.sender.to_string() != owner {
-    //     return Err(ContractError::Unauthorized {});
-    // }
     cw_ownable::assert_owner(deps.storage, &info.sender)?;
 
-
-    // Prevents minting new NFTs by simply toggling the whitelist status.
-    // This ensures that the capability to mint new tokens cannot be exploited
-    // by reopen whitelist state.
     if state {
         let owned_list = OWNED
             .may_load(deps.storage, target.to_string())?
@@ -466,24 +391,6 @@ pub fn set_whitelist(
     Ok(Response::new().add_attribute("action", "set_whitelist"))
 }
 
-pub fn set_lock(
-    deps: DepsMut,
-    _env: Env,
-    info: MessageInfo,
-    target: Uint128,
-    state: bool,
-) -> Result<Response, ContractError> {
-    let owner_of = OWNER_OF
-        .may_load(deps.storage, target.to_string())?
-        .unwrap_or("".to_string());
-    if info.sender.to_string() != owner_of {
-        return Err(ContractError::Unauthorized {});
-    }
-
-    LOCKED.save(deps.storage, target.to_string(), &state)?;
-    Ok(Response::new().add_attribute("action", "set_lock"))
-}
-
 pub fn set_base_token_uri(
     deps: DepsMut,
     _env: Env,
@@ -491,10 +398,6 @@ pub fn set_base_token_uri(
     id: u8,
     uri: String,
 ) -> Result<Response, ContractError> {
-    // let owner = OWNER.load(deps.storage)?;
-    // if info.sender.to_string() != owner {
-    //     return Err(ContractError::Unauthorized {});
-    // }
     cw_ownable::assert_owner(deps.storage, &info.sender)?;
     if id > 6 || id <= 0 {
         return Err(ContractError::InvalidInput { });
@@ -565,15 +468,11 @@ fn transfer_from(
             |balance: Option<Uint128>| -> StdResult<_> { Ok(balance.unwrap_or_default() + unit) },
         )?;
 
-        // _ownerOf[amountOrId] = to;
         OWNER_OF.save(deps.storage, amount_or_id.to_string(), &to)?;
-        // TOKENS.update(deps.storage, key, action);
         let mut token_info = TOKENS.load(deps.storage, &amount_or_id.to_string())?;
     
-        // Update the owner field
         token_info.owner = deps.api.addr_validate(&to)?;
         
-        // Save the updated token info back to storage
         TOKENS.save(deps.storage, &amount_or_id.to_string(), &token_info)?;
 
         GET_APPROVED.remove(deps.storage, amount_or_id.to_string());
@@ -582,19 +481,14 @@ fn transfer_from(
             .unwrap_or(vec![]);
 
         let updated_id = vec_updated_id.get(vec_updated_id.len() - 1).unwrap();
-        // uint256 updatedId = _owned[from][_owned[from].length - 1];
         let owned_index = OWNED_INDEX
             .may_load(deps.storage, amount_or_id.to_string())?
             .unwrap_or(Uint128::zero());
 
-        // _owned[from][_ownedIndex[amountOrId]] = updatedId;
         vec_updated_id[owned_index.u128() as usize] = updated_id.clone();
-        // _owned[from].pop();
         vec_updated_id.pop();
         OWNED.save(deps.storage, from.clone(), &vec_updated_id)?;
-        // _ownedIndex[updatedId] = _ownedIndex[amountOrId];
 
-        // _owned[to].push(amountOrId);
         let mut to_owned = OWNED.may_load(deps.storage, to.clone())?.unwrap_or(vec![]);
         to_owned.push(amount_or_id);
         OWNED.save(deps.storage, to.clone(), &to_owned)?;
@@ -606,15 +500,6 @@ fn transfer_from(
             &Uint128::from((to_owned.len() - 1) as u128),
         )?;
         Ok(Response::new()
-            .add_message(WasmMsg::Execute {
-                contract_addr: env.contract.address.to_string(),
-                msg: to_json_binary(&ExecuteMsg::GenerateNftEvent {
-                    sender: from.clone(),
-                    recipient: to.clone(),
-                    token_id: amount_or_id,
-                })?,
-                funds: vec![],
-            })
             .add_attribute("action", "transfer")
             .add_attribute("from", from)
             .add_attribute("to", to)
@@ -632,12 +517,6 @@ fn transfer_from(
                 },
             )?;
         }
-
-        // uint256 allowed = allowance[from][msg.sender];
-
-        // if (allowed != type(uint256).max)
-        //     allowance[from][msg.sender] = allowed - amountOrId;
-
         let response = _transfer(
             deps,
             env,
@@ -821,7 +700,7 @@ fn _transfer(
         .may_load(deps.storage, to.clone())?
         .unwrap_or_default();
 
-    let mut messages = vec![];
+    // let mut messages = vec![];
     // Skip burn for certain addresses to save gas
     if !whitelist_from {
         let tokens_to_burn = (balance_before_sender / unit)
@@ -830,8 +709,9 @@ fn _transfer(
                 .unwrap_or_default()
                 / unit);
         for _i in 0..tokens_to_burn.u128() {
-            let msg = _burn(deps.storage, env.clone(), from_addr.clone())?;
-            messages.push(msg);
+            // let msg = _burn(deps.storage, env.clone(), from_addr.clone())?;
+            _burn(deps.storage, env.clone(), from_addr.clone())?;
+            // messages.push(msg);
         }
     }
 
@@ -843,20 +723,21 @@ fn _transfer(
             / unit)
             - (balance_before_receiver / unit);
         for _i in 0..tokens_to_mint.u128() {
-            let msg = _mint(deps.storage, env.clone(), to_addr.clone())?;
-            messages.push(msg);
+            // let msg = _mint(deps.storage, env.clone(), to_addr.clone())?;
+            _mint(deps.storage, env.clone(), to_addr.clone())?;
+            // messages.push(msg);
         }
     }
 
     Ok(Response::new()
-        .add_messages(messages)
+        // .add_messages(messages)
         .add_attribute("action", event.to_string())
         .add_attribute("from", from)
         .add_attribute("to", to)
         .add_attribute("amount", amount))
 }
 
-fn _mint(storage: &mut dyn Storage, env: Env, to: Addr) -> Result<WasmMsg, ContractError> {
+fn _mint(storage: &mut dyn Storage, env: Env, to: Addr) -> Result<Response, ContractError> {
     if to == "" {
         return Err(ContractError::InvalidRecipient {});
     }
@@ -884,7 +765,6 @@ fn _mint(storage: &mut dyn Storage, env: Env, to: Addr) -> Result<WasmMsg, Contr
         &Uint128::from((owned.len() - 1) as u128),
     )?;
 
-    //TEST URI
     let rng = _get_random_number(&env);
     let token_uri;
     if rng < Uint128::new(20){
@@ -900,7 +780,6 @@ fn _mint(storage: &mut dyn Storage, env: Env, to: Addr) -> Result<WasmMsg, Contr
         token_uri = "https://arweave.net/4vT1QhisR_8ENY9oCpz3X05qTLaMyPpkVQUSX6Ug6_I";
     }
     TOKEN_URI.save(storage, id.to_string(), &token_uri.to_string())?;
-    // let token_uri = TOKEN_URI.may_load(storage)?.unwrap_or("https://arweave.net/XpXSyZiPGlpcc-Dsz7XMwdxKeNuczW-01uR5rNqOj3w".to_string());
     let token = TokenInfo {
             owner: to.clone(),
             approvals: vec![],
@@ -910,19 +789,10 @@ fn _mint(storage: &mut dyn Storage, env: Env, to: Addr) -> Result<WasmMsg, Contr
 
     TOKENS.save(storage, &id.to_string(), &token)?;
 
-    //     emit Transfer(address(0), to, id);
-    Ok(WasmMsg::Execute {
-        contract_addr: env.contract.address.to_string(),
-        msg: to_json_binary(&ExecuteMsg::GenerateNftMintEvent {
-            sender: env.contract.address.to_string(),
-            recipient: to.to_string(),
-            token_id: id,
-        })?,
-        funds: vec![],
-    })
+    Ok(Response::new())
 }
 
-fn _burn(storage: &mut dyn Storage, env: Env, from: Addr) -> Result<WasmMsg, ContractError> {
+fn _burn(storage: &mut dyn Storage, env: Env, from: Addr) -> Result<Response, ContractError> {
     if from == "" {
         return Err(ContractError::InvalidSender {});
     }
@@ -940,76 +810,6 @@ fn _burn(storage: &mut dyn Storage, env: Env, from: Addr) -> Result<WasmMsg, Con
     if locked {
         return Err(ContractError::PreventBurn {});
     }
-
-    //     emit Transfer(from, address(0), id);
-    Ok(WasmMsg::Execute {
-        contract_addr: env.contract.address.to_string(),
-        msg: to_json_binary(&ExecuteMsg::GenerateNftBurnEvent {
-            sender: from.to_string(),
-            token_id: id,
-        })?,
-        funds: vec![],
-    })
+    Ok(Response::new())
 }
 
-/**
- * Additional functions to generate and emit events below
- */
-
-pub fn generate_nft_event(
-    _deps: DepsMut,
-    env: Env,
-    info: MessageInfo,
-    sender: String,
-    recipient: String,
-    token_id: Uint128,
-) -> Result<Response, ContractError> {
-    if info.sender.to_string() != env.contract.address.to_string() {
-        return Err(ContractError::Unauthorized {});
-    }
-
-    let res = Response::new()
-        .add_attribute("action", "transfer_nft")
-        .add_attribute("sender", sender)
-        .add_attribute("recipient", recipient)
-        .add_attribute("token_id", token_id);
-    Ok(res)
-}
-
-pub fn generate_nft_mint_event(
-    _deps: DepsMut,
-    env: Env,
-    info: MessageInfo,
-    sender: String,
-    recipient: String,
-    token_id: Uint128,
-) -> Result<Response, ContractError> {
-    if info.sender.to_string() != env.contract.address.to_string() {
-        return Err(ContractError::Unauthorized {});
-    }
-
-    let res = Response::new()
-        .add_attribute("action", "mint")
-        .add_attribute("minter", sender)
-        .add_attribute("owner", recipient)
-        .add_attribute("token_id", token_id);
-    Ok(res)
-}
-
-pub fn generate_nft_burn_event(
-    _deps: DepsMut,
-    env: Env,
-    info: MessageInfo,
-    sender: String,
-    token_id: Uint128,
-) -> Result<Response, ContractError> {
-    if info.sender.to_string() != env.contract.address.to_string() {
-        return Err(ContractError::Unauthorized {});
-    }
-
-    let res = Response::new()
-        .add_attribute("action", "burn")
-        .add_attribute("sender", sender)
-        .add_attribute("token_id", token_id);
-    Ok(res)
-}
