@@ -2,6 +2,11 @@
 
 Welcome to the Beep404 repository, the next evolution in blockchain token standards. Beep404 combines the best features of CW721 and CW20, creating a versatile and efficient token standard for the CosmWasm ecosystem. Inspired by ERC404, Beep404 extends its vision with enhancements tailored for the decentralized world, offering a multifaceted solution for tokens in the CosmWasm environment.
 
+## Acknowledgements
+
+We are profoundly grateful for the overwhelming support from the community, developers, and enthusiasts who share our vision. Special thanks to the SEI blockchain community for their invaluable assistance and collaboration in making Beep404 a reality. Your encouragement and feedback continue to drive us forward.
+
+
 ## Features of Beep404
 
 - **Hybrid Approach**: Integrates CW721's non-fungible token capabilities with CW20's fungible token features, offering unparalleled flexibility.
@@ -16,4 +21,4 @@ License
 Beep404 is open-sourced under the MIT License. For more details, refer to the LICENSE file.
 Support
 
-For questions and support, please open an issue in the GitHub repository or contact us directly at beep.max999@gmail.com.
+For questions and support, please open an issue in the GitHub repository or contact us directly at discord.gg/YnzJkC22gs.
